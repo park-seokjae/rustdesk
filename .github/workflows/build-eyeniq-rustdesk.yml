@@ -1,0 +1,141 @@
+name: Build Eyeniq RustDesk Android APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-arm64:
+    name: RustDesk 1.4.9 ARM64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    env:
+      RUSTDESK_HOST: rust.eyeniq.com
+      RUSTDESK_KEY: sbKHPfJqadW4LOEllSj49hV5lKkjTp3kF0jUEXfIbvc=
+      VERSION_NAME: "1.4.9"
+      VERSION_CODE: "67"
+      ANDROID_ABI: arm64-v8a
+
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+          android: false
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+
+      - name: Checkout official RustDesk 1.4.9
+        uses: actions/checkout@v4
+        with:
+          repository: rustdesk/rustdesk
+          ref: 1.4.9
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install Linux build dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang cmake curl gcc-multilib git g++ g++-multilib \
+            jq yq libayatana-appindicator3-dev libasound2-dev libc6-dev \
+            libclang-dev libunwind-dev libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev libgtk-3-dev libpam0g-dev \
+            libpulse-dev libva-dev libxcb-randr0-dev libxcb-shape0-dev \
+            libxcb-xfixes0-dev libxdo-dev libxfixes-dev llvm-dev nasm \
+            ninja-build openjdk-17-jdk-headless pkg-config tree wget
+
+      # RustDesk's F-Droid helper is used here because it performs the exact
+      # Android/Flutter/Rust bridge bootstrap required by this source tag.
+      - name: Prepare RustDesk Android toolchain and bridge
+        shell: bash
+        run: |
+          set -euxo pipefail
+          bash flutter/build_fdroid.sh \
+            "$VERSION_NAME" "$VERSION_CODE" "$ANDROID_ABI" prebuild
+
+      - name: Embed Eyeniq ID server and public key
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          p = Path("libs/hbb_common/src/config.rs")
+          s = p.read_text(encoding="utf-8")
+          host = os.environ["RUSTDESK_HOST"]
+          key = os.environ["RUSTDESK_KEY"]
+
+          s, n_host = re.subn(
+              r'pub const RENDEZVOUS_SERVERS:\s*&\[&str\]\s*=\s*&\[[^;]*\];',
+              f'pub const RENDEZVOUS_SERVERS: &[&str] = &["{host}"];',
+              s,
+              count=1,
+          )
+          s, n_key = re.subn(
+              r'pub const RS_PUB_KEY:\s*&str\s*=\s*"[^"]*";',
+              f'pub const RS_PUB_KEY: &str = "{key}";',
+              s,
+              count=1,
+          )
+
+          if n_host != 1 or n_key != 1:
+              raise SystemExit(
+                  f"Patch failed: RENDEZVOUS_SERVERS={n_host}, RS_PUB_KEY={n_key}"
+              )
+
+          p.write_text(s, encoding="utf-8")
+          print(f"Embedded host: {host}")
+          print("Embedded public key: yes")
+          PY
+
+          grep -nE 'RENDEZVOUS_SERVERS|RS_PUB_KEY' libs/hbb_common/src/config.rs | head -n 8
+
+      - name: Use an installable CI signing key
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # The upstream release Gradle config expects RustDesk's private
+          # release keystore. For a private/custom build we sign the release
+          # APK with the standard Android debug keystore instead.
+          sed -i \
+            's/signingConfig signingConfigs\.release/signingConfig signingConfigs.debug/g' \
+            flutter/android/app/build.gradle
+          grep -n 'signingConfig' flutter/android/app/build.gradle || true
+
+      - name: Build ARM64 APK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          bash flutter/build_fdroid.sh \
+            "$VERSION_NAME" "$VERSION_CODE" "$ANDROID_ABI" build
+
+      - name: Collect and verify APK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          APK="$(find flutter/build/app/outputs -type f -name '*.apk' | head -n 1)"
+          test -n "$APK"
+          cp "$APK" Eyeniq-RustDesk-1.4.9-arm64.apk
+          sha256sum Eyeniq-RustDesk-1.4.9-arm64.apk | tee Eyeniq-RustDesk-1.4.9-arm64.apk.sha256
+          ls -lh Eyeniq-RustDesk-1.4.9-arm64.apk*
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Eyeniq-RustDesk-1.4.9-arm64
+          path: |
+            Eyeniq-RustDesk-1.4.9-arm64.apk
+            Eyeniq-RustDesk-1.4.9-arm64.apk.sha256
+          if-no-files-found: error
+          retention-days: 30
