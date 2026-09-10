@@ -14,7 +14,6 @@ jobs:
 
     env:
       RUSTDESK_HOST: rust.eyeniq.com
-      RUSTDESK_KEY: sbKHPfJqadW4LOEllSj49hV5lKkjTp3kF0jUEXfIbvc=
       VERSION_NAME: "1.4.9"
       VERSION_CODE: "67"
       ANDROID_ABI: arm64-v8a
@@ -59,24 +58,44 @@ jobs:
         run: |
           set -euxo pipefail
           test -d "$ANDROID_SDK_ROOT"
-
           SDKMANAGER="$(command -v sdkmanager || true)"
           if [ -z "$SDKMANAGER" ]; then
             SDKMANAGER="$(find "$ANDROID_SDK_ROOT" -type f -name sdkmanager -print -quit)"
           fi
-
           test -n "$SDKMANAGER"
           test -x "$SDKMANAGER"
-
           SDKMANAGER_DIR="$(dirname "$SDKMANAGER")"
           echo "$SDKMANAGER_DIR" >> "$GITHUB_PATH"
           export PATH="$SDKMANAGER_DIR:$PATH"
-
           sdkmanager --version
           yes | sdkmanager --licenses >/dev/null || true
 
-      # RustDesk's F-Droid helper is used here because it performs the exact
-      # Android/Flutter/Rust bridge bootstrap required by this source tag.
+      - name: Patch RustDesk 1.4.9 bridge Flutter version
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          p = Path(".github/workflows/bridge.yml")
+          s = p.read_text(encoding="utf-8")
+          if "  FLUTTER_VERSION:" not in s:
+              m = re.search(r'flutter-version:\s*"([^"]+)"', s)
+              if not m:
+                  raise SystemExit("Could not detect default bridge Flutter version")
+              version = m.group(1)
+              if "env:\n" not in s:
+                  raise SystemExit("Could not find bridge.yml env section")
+              s = s.replace("env:\n", f'env:\n  FLUTTER_VERSION: "{version}"\n', 1)
+              p.write_text(s, encoding="utf-8")
+              print(f"Injected FLUTTER_VERSION={version}")
+          PY
+          BRIDGE_FLUTTER_VERSION="$(yq -r .env.FLUTTER_VERSION .github/workflows/bridge.yml)"
+          test -n "$BRIDGE_FLUTTER_VERSION"
+          test "$BRIDGE_FLUTTER_VERSION" != "null"
+          echo "Bridge Flutter version: $BRIDGE_FLUTTER_VERSION"
+
       - name: Prepare RustDesk Android toolchain and bridge
         shell: bash
         run: |
@@ -88,6 +107,9 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          RUSTDESK_KEY="$(curl -fsSL 'https://raw.githubusercontent.com/park-seokjae/rustdesk/3a5f8cb11904e454787385c7bebf228ad5d8f140/.github/workflows/build-eyeniq-rustdesk.yml' | sed -n 's/^[[:space:]]*RUSTDESK_KEY:[[:space:]]*//p' | head -n 1)"
+          test -n "$RUSTDESK_KEY"
+          export RUSTDESK_KEY
           python3 - <<'PY'
           import os
           import re
@@ -97,7 +119,6 @@ jobs:
           s = p.read_text(encoding="utf-8")
           host = os.environ["RUSTDESK_HOST"]
           key = os.environ["RUSTDESK_KEY"]
-
           s, n_host = re.subn(
               r'pub const RENDEZVOUS_SERVERS:\s*&\[&str\]\s*=\s*&\[[^;]*\];',
               f'pub const RENDEZVOUS_SERVERS: &[&str] = &["{host}"];',
@@ -110,26 +131,17 @@ jobs:
               s,
               count=1,
           )
-
           if n_host != 1 or n_key != 1:
-              raise SystemExit(
-                  f"Patch failed: RENDEZVOUS_SERVERS={n_host}, RS_PUB_KEY={n_key}"
-              )
-
+              raise SystemExit(f"Patch failed: RENDEZVOUS_SERVERS={n_host}, RS_PUB_KEY={n_key}")
           p.write_text(s, encoding="utf-8")
           print(f"Embedded host: {host}")
           print("Embedded public key: yes")
           PY
 
-          grep -nE 'RENDEZVOUS_SERVERS|RS_PUB_KEY' libs/hbb_common/src/config.rs | head -n 8
-
       - name: Use an installable CI signing key
         shell: bash
         run: |
           set -euxo pipefail
-          # The upstream release Gradle config expects RustDesk's private
-          # release keystore. For a private/custom build we sign the release
-          # APK with the standard Android debug keystore instead.
           sed -i \
             's/signingConfig signingConfigs\.release/signingConfig signingConfigs.debug/g' \
             flutter/android/app/build.gradle
