@@ -96,6 +96,22 @@ jobs:
           test "$BRIDGE_FLUTTER_VERSION" != "null"
           echo "Bridge Flutter version: $BRIDGE_FLUTTER_VERSION"
 
+      # build_fdroid.sh otherwise builds the newest vcpkg-tool against this
+      # tag's pinned vcpkg source. That pair is incompatible on current runners.
+      - name: Bootstrap RustDesk-pinned vcpkg
+        shell: bash
+        run: |
+          set -euxo pipefail
+          VCPKG_COMMIT_ID="$(yq -r '.env.VCPKG_COMMIT_ID' .github/workflows/flutter-build.yml)"
+          test -n "$VCPKG_COMMIT_ID"
+          test "$VCPKG_COMMIT_ID" != "null"
+          export VCPKG_ROOT="$HOME/vcpkg"
+          test ! -e "$VCPKG_ROOT"
+          git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
+          git -C "$VCPKG_ROOT" checkout --detach "$VCPKG_COMMIT_ID"
+          "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
+          "$VCPKG_ROOT/vcpkg" version
+
       - name: Prepare RustDesk Android toolchain and bridge
         shell: bash
         run: |
