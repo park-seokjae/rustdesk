@@ -127,6 +127,7 @@ jobs:
           test -n "$RUSTDESK_KEY"
           export RUSTDESK_KEY
           python3 - <<'PY'
+          import json
           import os
           import re
           from pathlib import Path
@@ -150,8 +151,32 @@ jobs:
           if n_host != 1 or n_key != 1:
               raise SystemExit(f"Patch failed: RENDEZVOUS_SERVERS={n_host}, RS_PUB_KEY={n_key}")
           p.write_text(s, encoding="utf-8")
+
+          # RustDesk's mobile settings page reads persisted options only. Keep the
+          # compiled defaults for actual connections and prefill the visible fields too.
+          dart = Path("flutter/lib/common.dart")
+          d = dart.read_text(encoding="utf-8")
+          old_ui = '''  ServerConfig.fromOptions(Map<String, dynamic> options)
+      : idServer = options['custom-rendezvous-server'] ?? "",
+        relayServer = options['relay-server'] ?? "",
+        apiServer = options['api-server'] ?? "",
+        key = options['key'] ?? "";'''
+          new_ui = f'''  ServerConfig.fromOptions(Map<String, dynamic> options)
+      : idServer = (options['custom-rendezvous-server'] ?? "").toString().trim().isEmpty
+          ? {json.dumps(host)}
+          : (options['custom-rendezvous-server'] ?? "").toString(),
+        relayServer = options['relay-server'] ?? "",
+        apiServer = options['api-server'] ?? "",
+        key = (options['key'] ?? "").toString().trim().isEmpty
+          ? {json.dumps(key)}
+          : (options['key'] ?? "").toString();'''
+          if old_ui not in d:
+              raise SystemExit("Patch failed: mobile ServerConfig.fromOptions")
+          dart.write_text(d.replace(old_ui, new_ui, 1), encoding="utf-8")
+
           print(f"Embedded host: {host}")
           print("Embedded public key: yes")
+          print("Prefilled mobile server settings: yes")
           PY
 
       - name: Use an installable CI signing key
