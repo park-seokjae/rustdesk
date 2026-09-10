@@ -18,6 +18,7 @@ jobs:
       VERSION_NAME: "1.4.9"
       VERSION_CODE: "67"
       ANDROID_ABI: arm64-v8a
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
 
     steps:
       - name: Free disk space
@@ -32,7 +33,7 @@ jobs:
           swap-storage: false
 
       - name: Checkout official RustDesk 1.4.9
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: rustdesk/rustdesk
           ref: 1.4.9
@@ -52,6 +53,27 @@ jobs:
             libpulse-dev libva-dev libxcb-randr0-dev libxcb-shape0-dev \
             libxcb-xfixes0-dev libxdo-dev libxfixes-dev llvm-dev nasm \
             ninja-build openjdk-17-jdk-headless pkg-config tree wget
+
+      - name: Configure Android SDK command-line tools
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -d "$ANDROID_SDK_ROOT"
+
+          SDKMANAGER="$(command -v sdkmanager || true)"
+          if [ -z "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_SDK_ROOT" -type f -name sdkmanager -print -quit)"
+          fi
+
+          test -n "$SDKMANAGER"
+          test -x "$SDKMANAGER"
+
+          SDKMANAGER_DIR="$(dirname "$SDKMANAGER")"
+          echo "$SDKMANAGER_DIR" >> "$GITHUB_PATH"
+          export PATH="$SDKMANAGER_DIR:$PATH"
+
+          sdkmanager --version
+          yes | sdkmanager --licenses >/dev/null || true
 
       # RustDesk's F-Droid helper is used here because it performs the exact
       # Android/Flutter/Rust bridge bootstrap required by this source tag.
